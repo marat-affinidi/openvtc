@@ -1222,7 +1222,12 @@ pub(crate) async fn dispatch(ctx: &mut ActionCtx<'_>, action: W) {
                 return;
             };
             if action == W::Sign {
-                (Plan::Sign { path }, format!("making {short} sign"))
+                let hint = if cfg!(target_os = "macos") {
+                    format!(" ({})", git_signing::KEYCHAIN_HINT)
+                } else {
+                    String::new()
+                };
+                (Plan::Sign { path }, format!("making {short} sign{hint}"))
             } else {
                 (
                     Plan::Unsign { path },

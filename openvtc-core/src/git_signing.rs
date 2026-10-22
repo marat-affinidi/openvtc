@@ -68,9 +68,18 @@ pub const MIN_BINARY: (u32, u32) = (0, 14);
 /// How long a VTA round-trip during setup may take (R1.2).
 const VTA_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// How long `did-git-sign enable` / `disable` may take: local file edits, so a
-/// hang means something is wrong.
+/// How long `did-git-sign disable` may take: local file edits, so a hang means
+/// something is wrong.
 const LOCAL_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long `did-git-sign enable` may take. It reads the credential this
+/// process stored, so on macOS its first run waits on a Keychain dialog that
+/// only the user can answer.
+const KEYCHAIN_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// What a user must expect the first time a checkout is made to sign.
+pub const KEYCHAIN_HINT: &str =
+    "macOS may ask to let did-git-sign use your keychain: choose Always Allow";
 
 /// A persona's signing key, as did-git-sign needs it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -698,7 +707,7 @@ pub fn binary_status() -> BinaryStatus {
 }
 
 /// Run `did-git-sign <args>` in `dir`, bounded. The error is what it said.
-fn run_in(dir: &Path, args: &[&str]) -> Result<String, String> {
+fn run_in(dir: &Path, args: &[&str], timeout: Duration) -> Result<String, String> {
     let mut child = Command::new("did-git-sign")
         .args(args)
         .current_dir(dir)
@@ -712,10 +721,18 @@ fn run_in(dir: &Path, args: &[&str]) -> Result<String, String> {
     loop {
         match child.try_wait() {
             Ok(Some(_)) => break,
-            Ok(None) if started.elapsed() >= LOCAL_TIMEOUT => {
+            Ok(None) if started.elapsed() >= timeout => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err("did-git-sign did not finish in time".into());
+                return Err(
+                    if cfg!(target_os = "macos") && timeout == KEYCHAIN_TIMEOUT {
+                        format!(
+                            "did-git-sign did not finish in time ({KEYCHAIN_HINT}, then try again)"
+                        )
+                    } else {
+                        "did-git-sign did not finish in time".into()
+                    },
+                );
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(50)),
             Err(e) => return Err(format!("couldn't wait for did-git-sign: {e}")),
@@ -746,7 +763,7 @@ fn run_in(dir: &Path, args: &[&str]) -> Result<String, String> {
 /// What did-git-sign said — for example that another tool owns
 /// `core.hooksPath` there.
 pub fn enable_in(repo: &Path, profile: &str) -> Result<(), String> {
-    run_in(repo, &["enable", "--profile", profile]).map(|_| ())
+    run_in(repo, &["enable", "--profile", profile], KEYCHAIN_TIMEOUT).map(|_| ())
 }
 
 /// `did-git-sign disable` in the checkout at `repo`.
@@ -755,7 +772,7 @@ pub fn enable_in(repo: &Path, profile: &str) -> Result<(), String> {
 ///
 /// What did-git-sign said.
 pub fn disable_in(repo: &Path) -> Result<(), String> {
-    run_in(repo, &["disable"]).map(|_| ())
+    run_in(repo, &["disable"], LOCAL_TIMEOUT).map(|_| ())
 }
 
 // ****************************************************************************
